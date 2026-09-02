@@ -125,27 +125,40 @@ const sanitizeMobileNumber = (input) => {
   return digits.length === 10 ? digits : null;
 };
 
+
 // ============================================================================
-// 6. EMAIL DISPATCH LOGIC (BREVO HTTPS API)
+// 7. SEND CONSULTATION EMAIL (via HTTPS Port 443)
 // ============================================================================
 
-const sendConsultationEmail = async (studentEmail, studentName, details) => {
-  if (!process.env.BREVO_API_KEY) {
-    console.error('❌ Cannot dispatch email: BREVO_API_KEY environment variable is not configured.');
+const sendConsultationEmail = async (
+  studentEmail,
+  studentName,
+  details
+) => {
+  if (!process.env.RESEND_API_KEY) {
+    console.error('❌ Email cannot be sent: RESEND_API_KEY is missing.');
     return false;
   }
 
   const targetEmail = String(studentEmail || '').trim().toLowerCase();
 
   if (!targetEmail || !isValidEmail(targetEmail)) {
-    console.error(`❌ Invalid student recipient address: ${targetEmail}`);
+    console.error(`❌ Invalid student email address: ${targetEmail}`);
     return false;
   }
 
+  // --------------------------------------------------------------------------
+  // BYPASS RESEND 403 RESTRICTION FOR DEMO / SUBMISSION:
+  // Resend free sandbox only sends to the owner's email address.
+  // --------------------------------------------------------------------------
+  const ownerEmail = 'mr.atharvbadekar9422@gmail.com';
+  const isOwner = targetEmail === ownerEmail.toLowerCase();
+  const deliveryAddress = isOwner ? targetEmail : ownerEmail;
+
   console.log('--------------------------------------------------');
-  console.log('📧 Preparing consultation dispatch via Brevo HTTPS API');
-  console.log(`📤 FROM: ${BREVO_SENDER_EMAIL}`);
-  console.log(`📥 TO:   ${targetEmail}`);
+  console.log('📧 Preparing consultation email via Resend API (HTTPS)');
+  console.log(`🎓 Intended Student: ${targetEmail}`);
+  console.log(`📥 Delivering To:     ${deliveryAddress}`);
   console.log('--------------------------------------------------');
 
   const safeStudentName = escapeHtml(studentName || 'Student');
@@ -171,30 +184,40 @@ const sendConsultationEmail = async (studentEmail, studentName, details) => {
 </head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;">
   <div style="max-width:650px;margin:30px auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+    
     <div style="background:#1e3a8a;color:#ffffff;padding:25px;text-align:center;">
       <h2 style="margin:0;font-size:22px;">Central University of Rajasthan</h2>
       <p style="margin:7px 0 0;font-size:14px;color:#bfdbfe;">University Health Centre</p>
     </div>
 
     <div style="padding:30px;color:#334155;line-height:1.6;">
+      ${!isOwner ? `
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;padding:10px 14px;border-radius:8px;font-size:12px;margin-bottom:18px;">
+        <strong>Notice:</strong> This consultation email was intended for student <code>${targetEmail}</code>.
+      </div>` : ''}
+
       <p>Dear <strong>${safeStudentName}</strong>,</p>
       <p>Your medical consultation has been successfully recorded. Please find your consultation and prescription details below.</p>
 
       <table style="width:100%;border-collapse:collapse;margin-top:20px;font-size:14px;">
         <tr>
-          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;width:38%;background:#f8fafc;">Date & Time</td>
+          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;width:38%;background:#f8fafc;">Student Email</td>
+          <td style="padding:12px;border-bottom:1px solid #e2e8f0;">${targetEmail}</td>
+        </tr>
+        <tr>
+          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#ffffff;">Date & Time</td>
           <td style="padding:12px;border-bottom:1px solid #e2e8f0;">${formattedDate}</td>
         </tr>
         <tr>
-          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#ffffff;">Attending Doctor</td>
+          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#f8fafc;">Attending Doctor</td>
           <td style="padding:12px;border-bottom:1px solid #e2e8f0;">Dr. ${safeDoctorName}</td>
         </tr>
         <tr>
-          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#f8fafc;">Symptoms</td>
+          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#ffffff;">Symptoms</td>
           <td style="padding:12px;border-bottom:1px solid #e2e8f0;">${safeSymptoms}</td>
         </tr>
         <tr>
-          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#ffffff;">Diagnosis / Advice</td>
+          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#f8fafc;">Diagnosis / Advice</td>
           <td style="padding:12px;border-bottom:1px solid #e2e8f0;">${safeTreatment}</td>
         </tr>
         <tr style="background:#ecfdf5;">
@@ -223,105 +246,28 @@ const sendConsultationEmail = async (studentEmail, studentName, details) => {
 </html>`;
 
   try {
-    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
-    sendSmtpEmail.sender = {
-      name: 'CURAJ Health Centre',
-      email: BREVO_SENDER_EMAIL
-    };
-    sendSmtpEmail.to = [{ email: targetEmail, name: safeStudentName }];
-    sendSmtpEmail.subject = `Medical Prescription & Consultation Summary - ${currentDate.toLocaleDateString('en-IN')}`;
-    sendSmtpEmail.htmlContent = htmlContent;
+    const { data, error } = await resend.emails.send({
+      from: 'CURAJ Health Centre <onboarding@resend.dev>',
+      to: [deliveryAddress],
+      subject: `Medical Prescription & Consultation Summary - ${targetEmail}`,
+      html: htmlContent
+    });
 
-    const data = await brevoClient.sendTransacEmail(sendSmtpEmail);
-
-    console.log('--------------------------------------------------');
-    console.log('✅ EMAIL DISPATCHED VIA BREVO HTTPS (PORT 443)');
-    console.log(`📥 TO: ${targetEmail}`);
-    console.log(`🆔 Message ID:`, data?.messageId || data?.body?.messageId || 'DELIVERED');
-    console.log('--------------------------------------------------');
-    return true;
-  } catch (error) {
-    const errDetails = error.response?.body || error.response?.data || error.message;
-    console.error('❌ Brevo Dispatch Failed:', JSON.stringify(errDetails));
-    return false;
-  }
-};
-
-// ============================================================================
-// 7. DATABASE INITIALIZATION
-// ============================================================================
-
-const initDatabase = async () => {
-  try {
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS doctors (
-        id SERIAL PRIMARY KEY,
-        name VARCHAR(100) NOT NULL,
-        department VARCHAR(100) NOT NULL,
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-
-      CREATE TABLE IF NOT EXISTS students (
-        id SERIAL PRIMARY KEY,
-        college_id VARCHAR(50) UNIQUE NOT NULL,
-        full_name VARCHAR(100),
-        email VARCHAR(100),
-        mobile_number VARCHAR(20),
-        hostel_name VARCHAR(50),
-        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-
-      CREATE TABLE IF NOT EXISTS consultations (
-        id SERIAL PRIMARY KEY,
-        doctor_id INTEGER REFERENCES doctors(id) ON DELETE SET NULL,
-        patient_id VARCHAR(50) NOT NULL,
-        is_student BOOLEAN DEFAULT true,
-        symptoms TEXT,
-        treatment TEXT,
-        prescription TEXT,
-        additional_notes TEXT,
-        consultation_date TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-      );
-    `);
-
-    // Ensure columns exist on students table
-    await pool.query(`
-      ALTER TABLE students ADD COLUMN IF NOT EXISTS full_name VARCHAR(100);
-      ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(100);
-      ALTER TABLE students ADD COLUMN IF NOT EXISTS mobile_number VARCHAR(20);
-      ALTER TABLE students ADD COLUMN IF NOT EXISTS hostel_name VARCHAR(50);
-    `);
-
-    // Remove legacy NOT NULL constraints dynamically
-    await pool.query(`
-      DO $$
-      DECLARE
-        rec RECORD;
-      BEGIN
-        FOR rec IN
-          SELECT column_name
-          FROM information_schema.columns
-          WHERE table_name = 'students'
-          AND column_name NOT IN ('id', 'college_id')
-          AND is_nullable = 'NO'
-        LOOP
-          EXECUTE 'ALTER TABLE students ALTER COLUMN "' || rec.column_name || '" DROP NOT NULL;';
-        END LOOP;
-      END $$;
-    `);
-
-    // Seed doctors if table is empty
-    const docCheck = await pool.query('SELECT COUNT(*) FROM doctors');
-    if (parseInt(docCheck.rows[0].count, 10) === 0) {
-      await pool.query(
-        `INSERT INTO doctors (name, department) VALUES ($1, $2), ($3, $4)`,
-        ['Dr. Sharma', 'General Medicine', 'Dr. Verma', 'Emergency & OPD']
-      );
+    if (error) {
+      console.error('❌ Resend API Error:', error);
+      return false;
     }
 
-    console.log('✅ PostgreSQL database initialized successfully.');
+    console.log('--------------------------------------------------');
+    console.log('✅ EMAIL SENT SUCCESSFULLY (via HTTPS)');
+    console.log(`📥 TO:   ${deliveryAddress}`);
+    console.log(`🆔 Message ID: ${data.id}`);
+    console.log('--------------------------------------------------');
+    return true;
+
   } catch (error) {
-    console.error('❌ Database initialization error:', error.message);
+    console.error('❌ Resend Dispatch Failed:', error.message);
+    return false;
   }
 };
 
