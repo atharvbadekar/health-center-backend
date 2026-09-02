@@ -6,7 +6,6 @@ const cors = require('cors');
 const axios = require('axios');
 const multer = require('multer');
 const xlsx = require('xlsx');
-const SibApiV3Sdk = require('@getbrevo/brevo');
 const pool = require('./db');
 
 // ============================================================================
@@ -21,24 +20,17 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // ============================================================================
-// 2. BREVO HTTPS API CLIENT INITIALIZATION (Port 443)
+// 2. EMAIL CONFIGURATION (BREVO DIRECT HTTPS REST API)
 // ============================================================================
 
-const brevoClient = new SibApiV3Sdk.TransactionalEmailsApi();
-const BREVO_KEY = process.env.BREVO_API_KEY || '';
-
-if (BREVO_KEY) {
-  brevoClient.setApiKey(
-    SibApiV3Sdk.TransactionalEmailsApiApiKeys.apiKey,
-    BREVO_KEY
-  );
-  console.log('✅ Brevo HTTPS API client initialized.');
-} else {
-  console.warn('⚠️ BREVO_API_KEY is missing. Email dispatch will fail.');
-}
-
-// Brevo Sender Email (Your registered Brevo account email)
+const BREVO_API_KEY = process.env.BREVO_API_KEY || '';
 const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'mr.atharvbadekar9422@gmail.com';
+
+if (BREVO_API_KEY) {
+  console.log('✅ Brevo Direct HTTPS API configured.');
+} else {
+  console.warn('⚠️ BREVO_API_KEY is not set in environment variables.');
+}
 
 // ============================================================================
 // 3. CORS & MIDDLEWARE
@@ -125,40 +117,27 @@ const sanitizeMobileNumber = (input) => {
   return digits.length === 10 ? digits : null;
 };
 
-
 // ============================================================================
-// 7. SEND CONSULTATION EMAIL (via HTTPS Port 443)
+// 6. DIRECT HTTPS EMAIL DISPATCH (via Brevo REST API endpoint)
 // ============================================================================
 
-const sendConsultationEmail = async (
-  studentEmail,
-  studentName,
-  details
-) => {
-  if (!process.env.RESEND_API_KEY) {
-    console.error('❌ Email cannot be sent: RESEND_API_KEY is missing.');
+const sendConsultationEmail = async (studentEmail, studentName, details) => {
+  if (!BREVO_API_KEY) {
+    console.error('❌ Cannot dispatch email: BREVO_API_KEY is missing.');
     return false;
   }
 
   const targetEmail = String(studentEmail || '').trim().toLowerCase();
 
   if (!targetEmail || !isValidEmail(targetEmail)) {
-    console.error(`❌ Invalid student email address: ${targetEmail}`);
+    console.error(`❌ Invalid student recipient address: ${targetEmail}`);
     return false;
   }
 
-  // --------------------------------------------------------------------------
-  // BYPASS RESEND 403 RESTRICTION FOR DEMO / SUBMISSION:
-  // Resend free sandbox only sends to the owner's email address.
-  // --------------------------------------------------------------------------
-  const ownerEmail = 'mr.atharvbadekar9422@gmail.com';
-  const isOwner = targetEmail === ownerEmail.toLowerCase();
-  const deliveryAddress = isOwner ? targetEmail : ownerEmail;
-
   console.log('--------------------------------------------------');
-  console.log('📧 Preparing consultation email via Resend API (HTTPS)');
-  console.log(`🎓 Intended Student: ${targetEmail}`);
-  console.log(`📥 Delivering To:     ${deliveryAddress}`);
+  console.log('📧 Dispatching consultation email via Brevo REST API (HTTPS)');
+  console.log(`📤 FROM: ${BREVO_SENDER_EMAIL}`);
+  console.log(`📥 TO:   ${targetEmail}`);
   console.log('--------------------------------------------------');
 
   const safeStudentName = escapeHtml(studentName || 'Student');
@@ -184,40 +163,30 @@ const sendConsultationEmail = async (
 </head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;">
   <div style="max-width:650px;margin:30px auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
-    
     <div style="background:#1e3a8a;color:#ffffff;padding:25px;text-align:center;">
       <h2 style="margin:0;font-size:22px;">Central University of Rajasthan</h2>
       <p style="margin:7px 0 0;font-size:14px;color:#bfdbfe;">University Health Centre</p>
     </div>
 
     <div style="padding:30px;color:#334155;line-height:1.6;">
-      ${!isOwner ? `
-      <div style="background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;padding:10px 14px;border-radius:8px;font-size:12px;margin-bottom:18px;">
-        <strong>Notice:</strong> This consultation email was intended for student <code>${targetEmail}</code>.
-      </div>` : ''}
-
       <p>Dear <strong>${safeStudentName}</strong>,</p>
       <p>Your medical consultation has been successfully recorded. Please find your consultation and prescription details below.</p>
 
       <table style="width:100%;border-collapse:collapse;margin-top:20px;font-size:14px;">
         <tr>
-          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;width:38%;background:#f8fafc;">Student Email</td>
-          <td style="padding:12px;border-bottom:1px solid #e2e8f0;">${targetEmail}</td>
-        </tr>
-        <tr>
-          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#ffffff;">Date & Time</td>
+          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;width:38%;background:#f8fafc;">Date & Time</td>
           <td style="padding:12px;border-bottom:1px solid #e2e8f0;">${formattedDate}</td>
         </tr>
         <tr>
-          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#f8fafc;">Attending Doctor</td>
+          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#ffffff;">Attending Doctor</td>
           <td style="padding:12px;border-bottom:1px solid #e2e8f0;">Dr. ${safeDoctorName}</td>
         </tr>
         <tr>
-          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#ffffff;">Symptoms</td>
+          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#f8fafc;">Symptoms</td>
           <td style="padding:12px;border-bottom:1px solid #e2e8f0;">${safeSymptoms}</td>
         </tr>
         <tr>
-          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#f8fafc;">Diagnosis / Advice</td>
+          <td style="padding:12px;font-weight:bold;border-bottom:1px solid #e2e8f0;background:#ffffff;">Diagnosis / Advice</td>
           <td style="padding:12px;border-bottom:1px solid #e2e8f0;">${safeTreatment}</td>
         </tr>
         <tr style="background:#ecfdf5;">
@@ -246,28 +215,117 @@ const sendConsultationEmail = async (
 </html>`;
 
   try {
-    const { data, error } = await resend.emails.send({
-      from: 'CURAJ Health Centre <onboarding@resend.dev>',
-      to: [deliveryAddress],
-      subject: `Medical Prescription & Consultation Summary - ${targetEmail}`,
-      html: htmlContent
-    });
+    const payload = {
+      sender: {
+        name: 'CURAJ Health Centre',
+        email: BREVO_SENDER_EMAIL
+      },
+      to: [{ email: targetEmail, name: safeStudentName }],
+      subject: `Medical Prescription & Consultation Summary - ${currentDate.toLocaleDateString('en-IN')}`,
+      htmlContent: htmlContent
+    };
 
-    if (error) {
-      console.error('❌ Resend API Error:', error);
-      return false;
-    }
+    const response = await axios.post(
+      'https://api.brevo.com/v3/smtp/email',
+      payload,
+      {
+        headers: {
+          'accept': 'application/json',
+          'api-key': BREVO_API_KEY,
+          'content-type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
 
     console.log('--------------------------------------------------');
-    console.log('✅ EMAIL SENT SUCCESSFULLY (via HTTPS)');
-    console.log(`📥 TO:   ${deliveryAddress}`);
-    console.log(`🆔 Message ID: ${data.id}`);
+    console.log('✅ EMAIL DELIVERED VIA BREVO REST API (HTTPS)');
+    console.log(`📥 TO: ${targetEmail}`);
+    console.log(`🆔 Message ID:`, response.data?.messageId || 'DELIVERED');
     console.log('--------------------------------------------------');
     return true;
-
   } catch (error) {
-    console.error('❌ Resend Dispatch Failed:', error.message);
+    const errData = error.response?.data || error.message;
+    console.error('❌ Brevo API Error:', JSON.stringify(errData));
     return false;
+  }
+};
+
+// ============================================================================
+// 7. DATABASE INITIALIZATION
+// ============================================================================
+
+const initDatabase = async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS doctors (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL,
+        department VARCHAR(100) NOT NULL,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS students (
+        id SERIAL PRIMARY KEY,
+        college_id VARCHAR(50) UNIQUE NOT NULL,
+        full_name VARCHAR(100),
+        email VARCHAR(100),
+        mobile_number VARCHAR(20),
+        hostel_name VARCHAR(50),
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS consultations (
+        id SERIAL PRIMARY KEY,
+        doctor_id INTEGER REFERENCES doctors(id) ON DELETE SET NULL,
+        patient_id VARCHAR(50) NOT NULL,
+        is_student BOOLEAN DEFAULT true,
+        symptoms TEXT,
+        treatment TEXT,
+        prescription TEXT,
+        additional_notes TEXT,
+        consultation_date TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+      );
+    `);
+
+    // Ensure columns exist on students table
+    await pool.query(`
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS full_name VARCHAR(100);
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(100);
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS mobile_number VARCHAR(20);
+      ALTER TABLE students ADD COLUMN IF NOT EXISTS hostel_name VARCHAR(50);
+    `);
+
+    // Remove legacy NOT NULL constraints dynamically
+    await pool.query(`
+      DO $$
+      DECLARE
+        rec RECORD;
+      BEGIN
+        FOR rec IN
+          SELECT column_name
+          FROM information_schema.columns
+          WHERE table_name = 'students'
+          AND column_name NOT IN ('id', 'college_id')
+          AND is_nullable = 'NO'
+        LOOP
+          EXECUTE 'ALTER TABLE students ALTER COLUMN "' || rec.column_name || '" DROP NOT NULL;';
+        END LOOP;
+      END $$;
+    `);
+
+    // Seed doctors if table is empty
+    const docCheck = await pool.query('SELECT COUNT(*) FROM doctors');
+    if (parseInt(docCheck.rows[0].count, 10) === 0) {
+      await pool.query(
+        `INSERT INTO doctors (name, department) VALUES ($1, $2), ($3, $4)`,
+        ['Dr. Sharma', 'General Medicine', 'Dr. Verma', 'Emergency & OPD']
+      );
+    }
+
+    console.log('✅ PostgreSQL database initialized successfully.');
+  } catch (error) {
+    console.error('❌ Database initialization error:', error.message);
   }
 };
 
@@ -544,7 +602,7 @@ app.post('/api/office/upload-students', upload.single('file'), handleExcelUpload
 app.post('/api/warden/upload-students', upload.single('file'), handleExcelUpload);
 
 // ============================================================================
-// 13. TEST EMAIL ROUTE (BREVO HTTPS)
+// 13. TEST EMAIL ROUTE (BREVO REST API)
 // ============================================================================
 
 app.get('/api/test-email', async (req, res) => {
@@ -567,31 +625,43 @@ app.get('/api/test-email', async (req, res) => {
   console.log(`📧 Test email requested -> ${targetEmail}`);
 
   try {
-    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
-    sendSmtpEmail.sender = {
-      name: 'CURAJ Health Centre',
-      email: BREVO_SENDER_EMAIL
+    const payload = {
+      sender: {
+        name: 'CURAJ Health Centre',
+        email: BREVO_SENDER_EMAIL
+      },
+      to: [{ email: targetEmail, name: 'Tester' }],
+      subject: 'Test Email from CURAJ Health Centre',
+      htmlContent: `
+        <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:auto;padding:30px;border:1px solid #e2e8f0;border-radius:8px;">
+          <h2 style="color:#1e3a8a;">CURAJ Health Centre</h2>
+          <p>This is a test email sent via <strong>Brevo REST API (HTTPS Port 443)</strong>.</p>
+          <p>Your email service on Render is fully functional and ready!</p>
+        </div>`
     };
-    sendSmtpEmail.to = [{ email: targetEmail, name: 'Tester' }];
-    sendSmtpEmail.subject = 'Test Email from CURAJ Health Centre';
-    sendSmtpEmail.htmlContent = `
-      <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:auto;padding:30px;border:1px solid #e2e8f0;border-radius:8px;">
-        <h2 style="color:#1e3a8a;">CURAJ Health Centre</h2>
-        <p>This is a test email sent via <strong>Brevo HTTPS API (Port 443)</strong>.</p>
-        <p>Your email service on Render is fully functional and ready!</p>
-      </div>`;
 
-    const data = await brevoClient.sendTransacEmail(sendSmtpEmail);
+    const response = await axios.post(
+      'https://api.brevo.com/v3/smtp/email',
+      payload,
+      {
+        headers: {
+          'accept': 'application/json',
+          'api-key': BREVO_API_KEY,
+          'content-type': 'application/json'
+        },
+        timeout: 10000
+      }
+    );
 
     console.log(`✅ Test email accepted for ${targetEmail}`);
 
     res.json({
       success: true,
       message: `Email successfully delivered to ${targetEmail}`,
-      messageId: data?.messageId || data?.body?.messageId || 'SUCCESS'
+      messageId: response.data?.messageId || 'SUCCESS'
     });
   } catch (error) {
-    const errDetails = error.response?.body || error.response?.data || error.message;
+    const errDetails = error.response?.data || error.message;
     console.error('❌ Test email failed:', errDetails);
     res.status(500).json({
       success: false,
