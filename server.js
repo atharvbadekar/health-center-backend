@@ -6,7 +6,7 @@ const cors = require('cors');
 const axios = require('axios');
 const multer = require('multer');
 const xlsx = require('xlsx');
-const { Resend } = require('resend');
+const SibApiV3Sdk = require('@getbrevo/brevo');
 const pool = require('./db');
 
 // ============================================================================
@@ -20,11 +20,28 @@ if (dns.setDefaultResultOrder) {
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// Initialize Resend HTTPS API Client
-const resend = new Resend(process.env.RESEND_API_KEY || '');
+// ============================================================================
+// 2. BREVO HTTPS API CLIENT INITIALIZATION (Port 443)
+// ============================================================================
+
+const brevoClient = new SibApiV3Sdk.TransactionalEmailsApi();
+const BREVO_KEY = process.env.BREVO_API_KEY || '';
+
+if (BREVO_KEY) {
+  brevoClient.setApiKey(
+    SibApiV3Sdk.TransactionalEmailsApiApiKeys.apiKey,
+    BREVO_KEY
+  );
+  console.log('✅ Brevo HTTPS API client initialized.');
+} else {
+  console.warn('⚠️ BREVO_API_KEY is missing. Email dispatch will fail.');
+}
+
+// Brevo Sender Email (Your registered Brevo account email)
+const BREVO_SENDER_EMAIL = process.env.BREVO_SENDER_EMAIL || 'mr.atharvbadekar9422@gmail.com';
 
 // ============================================================================
-// 2. CORS & MIDDLEWARE
+// 3. CORS & MIDDLEWARE
 // ============================================================================
 
 app.use(cors({
@@ -41,14 +58,8 @@ app.use(cors({
 
 app.use((req, res, next) => {
   res.header('Access-Control-Allow-Origin', '*');
-  res.header(
-    'Access-Control-Allow-Methods',
-    'GET, POST, PUT, DELETE, OPTIONS'
-  );
-  res.header(
-    'Access-Control-Allow-Headers',
-    'Content-Type, Authorization, Accept, X-Requested-With'
-  );
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, X-Requested-With');
 
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
@@ -61,7 +72,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // ============================================================================
-// 3. FILE UPLOAD
+// 4. FILE UPLOAD CONFIGURATION
 // ============================================================================
 
 const upload = multer({
@@ -72,17 +83,7 @@ const upload = multer({
 });
 
 // ============================================================================
-// 4. EMAIL SERVICE STATUS
-// ============================================================================
-
-if (!process.env.RESEND_API_KEY) {
-  console.warn('⚠️ RESEND_API_KEY is missing from environment variables. Email service disabled.');
-} else {
-  console.log('✅ Resend HTTPS API client initialized.');
-}
-
-// ============================================================================
-// 5. HTML ESCAPE FUNCTION
+// 5. HELPER FUNCTIONS
 // ============================================================================
 
 const escapeHtml = (value) => {
@@ -98,41 +99,52 @@ const escapeHtml = (value) => {
     .replace(/'/g, '&#039;');
 };
 
-// ============================================================================
-// 6. EMAIL VALIDATION
-// ============================================================================
-
 const isValidEmail = (email) => {
   if (!email) return false;
-
   const cleanEmail = String(email).trim();
-
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail);
 };
 
+const sanitizeMobileNumber = (input) => {
+  if (input === null || input === undefined) {
+    return null;
+  }
+
+  let rawStr = String(input).trim();
+  if (rawStr.includes('.')) {
+    rawStr = rawStr.split('.')[0];
+  }
+
+  let digits = rawStr.replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) {
+    digits = digits.slice(2);
+  } else if (digits.length === 11 && digits.startsWith('0')) {
+    digits = digits.slice(1);
+  }
+
+  return digits.length === 10 ? digits : null;
+};
+
 // ============================================================================
-// 7. SEND CONSULTATION EMAIL (via HTTPS Port 443)
+// 6. EMAIL DISPATCH LOGIC (BREVO HTTPS API)
 // ============================================================================
 
-const sendConsultationEmail = async (
-  studentEmail,
-  studentName,
-  details
-) => {
-  if (!process.env.RESEND_API_KEY) {
-    console.error('❌ Email cannot be sent: RESEND_API_KEY is missing.');
+const sendConsultationEmail = async (studentEmail, studentName, details) => {
+  if (!process.env.BREVO_API_KEY) {
+    console.error('❌ Cannot dispatch email: BREVO_API_KEY environment variable is not configured.');
     return false;
   }
 
   const targetEmail = String(studentEmail || '').trim().toLowerCase();
 
   if (!targetEmail || !isValidEmail(targetEmail)) {
-    console.error(`❌ Invalid student email address: ${targetEmail}`);
+    console.error(`❌ Invalid student recipient address: ${targetEmail}`);
     return false;
   }
 
   console.log('--------------------------------------------------');
-  console.log('📧 Preparing consultation email via Resend API (HTTPS)');
+  console.log('📧 Preparing consultation dispatch via Brevo HTTPS API');
+  console.log(`📤 FROM: ${BREVO_SENDER_EMAIL}`);
   console.log(`📥 TO:   ${targetEmail}`);
   console.log('--------------------------------------------------');
 
@@ -159,7 +171,6 @@ const sendConsultationEmail = async (
 </head>
 <body style="margin:0;padding:0;background:#f1f5f9;font-family:Arial,Helvetica,sans-serif;">
   <div style="max-width:650px;margin:30px auto;background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
-    
     <div style="background:#1e3a8a;color:#ffffff;padding:25px;text-align:center;">
       <h2 style="margin:0;font-size:22px;">Central University of Rajasthan</h2>
       <p style="margin:7px 0 0;font-size:14px;color:#bfdbfe;">University Health Centre</p>
@@ -212,33 +223,32 @@ const sendConsultationEmail = async (
 </html>`;
 
   try {
-    const { data, error } = await resend.emails.send({
-      from: 'CURAJ Health Centre <onboarding@resend.dev>',
-      to: [targetEmail],
-      subject: `Medical Prescription & Consultation Summary - ${currentDate.toLocaleDateString('en-IN')}`,
-      html: htmlContent
-    });
+    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
+    sendSmtpEmail.sender = {
+      name: 'CURAJ Health Centre',
+      email: BREVO_SENDER_EMAIL
+    };
+    sendSmtpEmail.to = [{ email: targetEmail, name: safeStudentName }];
+    sendSmtpEmail.subject = `Medical Prescription & Consultation Summary - ${currentDate.toLocaleDateString('en-IN')}`;
+    sendSmtpEmail.htmlContent = htmlContent;
 
-    if (error) {
-      console.error('❌ Resend API Error:', error);
-      return false;
-    }
+    const data = await brevoClient.sendTransacEmail(sendSmtpEmail);
 
     console.log('--------------------------------------------------');
-    console.log('✅ EMAIL SENT SUCCESSFULLY (via HTTPS)');
-    console.log(`📥 TO:   ${targetEmail}`);
-    console.log(`🆔 Message ID: ${data.id}`);
+    console.log('✅ EMAIL DISPATCHED VIA BREVO HTTPS (PORT 443)');
+    console.log(`📥 TO: ${targetEmail}`);
+    console.log(`🆔 Message ID:`, data?.messageId || data?.body?.messageId || 'DELIVERED');
     console.log('--------------------------------------------------');
     return true;
-
   } catch (error) {
-    console.error('❌ Resend Dispatch Failed:', error.message);
+    const errDetails = error.response?.body || error.response?.data || error.message;
+    console.error('❌ Brevo Dispatch Failed:', JSON.stringify(errDetails));
     return false;
   }
 };
 
 // ============================================================================
-// 8. DATABASE INITIALIZATION
+// 7. DATABASE INITIALIZATION
 // ============================================================================
 
 const initDatabase = async () => {
@@ -274,7 +284,7 @@ const initDatabase = async () => {
       );
     `);
 
-    // Ensure columns exist
+    // Ensure columns exist on students table
     await pool.query(`
       ALTER TABLE students ADD COLUMN IF NOT EXISTS full_name VARCHAR(100);
       ALTER TABLE students ADD COLUMN IF NOT EXISTS email VARCHAR(100);
@@ -300,7 +310,7 @@ const initDatabase = async () => {
       END $$;
     `);
 
-    // Seed doctors
+    // Seed doctors if table is empty
     const docCheck = await pool.query('SELECT COUNT(*) FROM doctors');
     if (parseInt(docCheck.rows[0].count, 10) === 0) {
       await pool.query(
@@ -318,7 +328,7 @@ const initDatabase = async () => {
 initDatabase();
 
 // ============================================================================
-// 9. HEALTH CHECK
+// 8. HEALTH CHECK ROUTE
 // ============================================================================
 
 app.get('/', (req, res) => {
@@ -326,7 +336,7 @@ app.get('/', (req, res) => {
 });
 
 // ============================================================================
-// 10. ADMIN LOGIN
+// 9. ADMIN LOGIN
 // ============================================================================
 
 app.post('/api/admin/login', (req, res) => {
@@ -349,7 +359,7 @@ app.post('/api/admin/login', (req, res) => {
 });
 
 // ============================================================================
-// 11. OFFICE / WARDEN LOGIN
+// 10. WARDEN / OFFICE LOGIN
 // ============================================================================
 
 const handleOfficeLogin = (req, res) => {
@@ -375,7 +385,7 @@ app.post('/api/office/login', handleOfficeLogin);
 app.post('/api/warden/login', handleOfficeLogin);
 
 // ============================================================================
-// 12. DOCTOR MANAGEMENT
+// 11. DOCTOR MANAGEMENT
 // ============================================================================
 
 app.get('/api/doctors', async (req, res) => {
@@ -444,31 +454,7 @@ app.delete('/api/doctors/:id', async (req, res) => {
 });
 
 // ============================================================================
-// 13. MOBILE NUMBER SANITIZATION
-// ============================================================================
-
-const sanitizeMobileNumber = (input) => {
-  if (input === null || input === undefined) {
-    return null;
-  }
-
-  let rawStr = String(input).trim();
-  if (rawStr.includes('.')) {
-    rawStr = rawStr.split('.')[0];
-  }
-
-  let digits = rawStr.replace(/\D/g, '');
-  if (digits.length === 12 && digits.startsWith('91')) {
-    digits = digits.slice(2);
-  } else if (digits.length === 11 && digits.startsWith('0')) {
-    digits = digits.slice(1);
-  }
-
-  return digits.length === 10 ? digits : null;
-};
-
-// ============================================================================
-// 14. EXCEL STUDENT UPLOAD
+// 12. EXCEL STUDENT UPLOAD
 // ============================================================================
 
 const handleExcelUpload = async (req, res) => {
@@ -608,8 +594,11 @@ const handleExcelUpload = async (req, res) => {
   }
 };
 
+app.post('/api/office/upload-students', upload.single('file'), handleExcelUpload);
+app.post('/api/warden/upload-students', upload.single('file'), handleExcelUpload);
+
 // ============================================================================
-// 15. TEST EMAIL ROUTE (via Resend HTTPS)
+// 13. TEST EMAIL ROUTE (BREVO HTTPS)
 // ============================================================================
 
 app.get('/api/test-email', async (req, res) => {
@@ -618,7 +607,7 @@ app.get('/api/test-email', async (req, res) => {
   if (!targetEmail) {
     return res.status(400).json({
       success: false,
-      error: 'Please provide an email query parameter, e.g. ?to=user@example.com'
+      error: 'Please provide an email parameter, e.g. /api/test-email?to=user@example.com'
     });
   }
 
@@ -632,40 +621,41 @@ app.get('/api/test-email', async (req, res) => {
   console.log(`📧 Test email requested -> ${targetEmail}`);
 
   try {
-    const { data, error } = await resend.emails.send({
-      from: 'CURAJ Health Centre <onboarding@resend.dev>',
-      to: [targetEmail],
-      subject: 'Test Email from CURAJ Health Centre',
-      html: `
-        <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:auto;padding:30px;border:1px solid #e2e8f0;border-radius:8px;">
-          <h2 style="color:#1e3a8a;">CURAJ Health Centre</h2>
-          <p>This is a test email sent via <strong>Resend HTTPS API (Port 443)</strong>.</p>
-          <p>Your email service on Render is fully functional and ready!</p>
-        </div>`
-    });
+    const sendSmtpEmail = new SibApiV3Sdk.SendSmtpEmail();
+    sendSmtpEmail.sender = {
+      name: 'CURAJ Health Centre',
+      email: BREVO_SENDER_EMAIL
+    };
+    sendSmtpEmail.to = [{ email: targetEmail, name: 'Tester' }];
+    sendSmtpEmail.subject = 'Test Email from CURAJ Health Centre';
+    sendSmtpEmail.htmlContent = `
+      <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:auto;padding:30px;border:1px solid #e2e8f0;border-radius:8px;">
+        <h2 style="color:#1e3a8a;">CURAJ Health Centre</h2>
+        <p>This is a test email sent via <strong>Brevo HTTPS API (Port 443)</strong>.</p>
+        <p>Your email service on Render is fully functional and ready!</p>
+      </div>`;
 
-    if (error) {
-      return res.status(400).json({ success: false, error });
-    }
+    const data = await brevoClient.sendTransacEmail(sendSmtpEmail);
 
     console.log(`✅ Test email accepted for ${targetEmail}`);
 
     res.json({
       success: true,
-      message: `Email successfully sent to ${targetEmail}`,
-      messageId: data.id
+      message: `Email successfully delivered to ${targetEmail}`,
+      messageId: data?.messageId || data?.body?.messageId || 'SUCCESS'
     });
   } catch (error) {
-    console.error('❌ Test email failed:', error);
+    const errDetails = error.response?.body || error.response?.data || error.message;
+    console.error('❌ Test email failed:', errDetails);
     res.status(500).json({
       success: false,
-      error: error.message
+      error: errDetails
     });
   }
 });
 
 // ============================================================================
-// 16. STUDENT MANAGEMENT
+// 14. STUDENT CRUD MANAGEMENT
 // ============================================================================
 
 app.post('/api/students', async (req, res) => {
@@ -727,10 +717,6 @@ app.post('/api/students', async (req, res) => {
   }
 });
 
-// ============================================================================
-// 17. GET STUDENTS
-// ============================================================================
-
 app.get('/api/students', async (req, res) => {
   try {
     const students = await pool.query('SELECT * FROM students ORDER BY id ASC');
@@ -744,14 +730,7 @@ app.get('/api/students', async (req, res) => {
 });
 
 // ============================================================================
-// 18. EXCEL UPLOAD ROUTES
-// ============================================================================
-
-app.post('/api/office/upload-students', upload.single('file'), handleExcelUpload);
-app.post('/api/warden/upload-students', upload.single('file'), handleExcelUpload);
-
-// ============================================================================
-// 19. OTP VERIFICATION
+// 15. OTP VERIFICATION
 // ============================================================================
 
 app.post('/api/send-otp', async (req, res) => {
@@ -813,7 +792,7 @@ app.post('/api/send-otp', async (req, res) => {
 });
 
 // ============================================================================
-// 20. MEDICAL CONSULTATIONS
+// 16. MEDICAL CONSULTATION SUBMISSION
 // ============================================================================
 
 app.post('/api/consultations', async (req, res) => {
@@ -906,7 +885,7 @@ app.post('/api/consultations', async (req, res) => {
 });
 
 // ============================================================================
-// 21. GET CONSULTATIONS
+// 17. GET CONSULTATIONS
 // ============================================================================
 
 app.get('/api/consultations', async (req, res) => {
@@ -930,7 +909,7 @@ app.get('/api/consultations', async (req, res) => {
 });
 
 // ============================================================================
-// 22. START SERVER
+// 18. START SERVER
 // ============================================================================
 
 app.listen(PORT, () => {
